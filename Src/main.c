@@ -85,7 +85,7 @@ TIM_HandleTypeDef htim2;
 #define F_OUT			1000.0f
 //FATFs
 char buffer[256];          //bufor odczytu i zapisu
-static FATFS FatFs;        //uchwyt do urz¹dzenia FatFs (dysku, karty SD...)
+static FATFS FatFs;        //uchwyt do urzÂ¹dzenia FatFs (dysku, karty SD...)
 FRESULT fresult;           //do przechowywania wyniku operacji na bibliotece FatFs
 FIL file;                  //uchwyt do otwartego pliku
 WORD bytes_written;        //liczba zapisanych byte
@@ -191,6 +191,11 @@ int main(void)
 		  myDacVal = buffer;
 		  HAL_Delay (22);
 		  HAL_DAC_SetValue(&hdac, DAC_CHANNEL_1, DAC_ALIGN_8B_R, myDacVal);*/
+fresult = f_mount(&FatFs, "", 0);
+fresult = f_open(&file, "write.txt", FA_OPEN_ALWAYS | FA_WRITE);
+int len = sprintf( buffer, "Hello PTM!\r\n");
+fresult = f_write(&file, buffer, len, &bytes_written);
+fresult = f_close (&file);
 
 
     /* USER CODE BEGIN 3 */

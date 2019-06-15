@@ -46,6 +46,9 @@
 #include "MY_CS43L22.h"
 #include "ff.h"
 #include <math.h>
+#include <string.h>
+#include "stm32f4xx.h"
+
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -55,7 +58,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+#define SDSIZE 1
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -64,8 +67,6 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
-DAC_HandleTypeDef hdac;
-
 I2C_HandleTypeDef hi2c1;
 
 I2S_HandleTypeDef hi2s3;
@@ -73,23 +74,26 @@ DMA_HandleTypeDef hdma_spi3_tx;
 
 SPI_HandleTypeDef hspi1;
 
-TIM_HandleTypeDef htim2;
+TIM_HandleTypeDef htim3;
+TIM_HandleTypeDef htim6;
 
 /* USER CODE BEGIN PV */
-/*Private variables-----------------------------------------------------------*/
-#define PI 3.14159f
 
-//Sample rate and Output freq
-#define F_SAMPLE		50000.0f
-//48000.0f
-#define F_OUT			1000.0f
+int song=1;
+/*Private variables-----------------------------------------------------------*/
+
+
 //FATFs
+uint8_t SDbuffer[SDSIZE];      	//bufor odczytu i zapisu
+uint16_t tempbuff[SDSIZE];
 char buffer[256];          //bufor odczytu i zapisu
-static FATFS FatFs;        //uchwyt do urzÂ¹dzenia FatFs (dysku, karty SD...)
+static FATFS FatFs;        //uchwyt do urz¹dzenia FatFs (dysku, karty SD...)
 FRESULT fresult;           //do przechowywania wyniku operacji na bibliotece FatFs
 FIL file;                  //uchwyt do otwartego pliku
-WORD bytes_written;        //liczba zapisanych byte
 WORD bytes_read;           //liczba odczytanych byte
+volatile int musicPlayback=0;
+
+
 
 //flagi
 #define      FA_READ             0x01
@@ -99,7 +103,6 @@ WORD bytes_read;           //liczba odczytanych byte
 #define      FA_CREATE_ALWAYS    0x08
 #define      FA_OPEN_ALWAYS      0x10
 #define      FA_OPEN_APPEND      0x30
-
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -108,23 +111,82 @@ static void MX_GPIO_Init(void);
 static void MX_DMA_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_I2S3_Init(void);
-static void MX_DAC_Init(void);
-static void MX_TIM2_Init(void);
 static void MX_SPI1_Init(void);
+static void MX_TIM3_Init(void);
+static void MX_TIM6_Init(void);
 /* USER CODE BEGIN PFP */
 
+
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+    if (htim->Instance == TIM3)
+    {
+
+    	if(HAL_GPIO_ReadPin(GPIOE,GPIO_PIN_9) == GPIO_PIN_RESET) {
+    	        	song++;
+    	        	if(song==3){
+    	        		song=0;
+    	        	}
+    	        }
+    	if(HAL_GPIO_ReadPin(GPIOE,GPIO_PIN_10) == GPIO_PIN_RESET) {
+        	if(musicPlayback==0){
+        		HAL_I2S_DMAStop(&hi2s3);
+        		HAL_I2S_DeInit(&hi2s3);
+        		hi2s3.Init.AudioFreq = I2S_AUDIOFREQ_16K;
+        		HAL_StatusTypeDef result = HAL_I2S_Init(&hi2s3);
+        		if(song==0)
+        		{
+
+        	    fresult = f_open(&file, "ozone.wav", 1);
+        		}
+        		else if(song==1)
+        		{
+        		 fresult = f_open(&file, "whatis.wav", 1);
+        		}
+        		else if(song==2)
+        		{
+        		 fresult = f_open(&file, "boom.wav", 1);
+        		}
+
+        		f_lseek(&file, 44);
+        		HAL_TIM_Base_Start_IT(&htim6);
+        	}
+
+        	else {
+        		HAL_TIM_Base_Stop_IT(&htim6);
+        		HAL_I2S_DeInit(&hi2s3);
+
+        		HAL_StatusTypeDef result = HAL_I2S_Init(&hi2s3);
+        		fresult = f_close(&file);
+        		musicPlayback=0;
+        	}
+    	}
+        HAL_TIM_Base_Stop_IT(&htim3);
+    }
+    if (htim->Instance == TIM6){
+    	musicPlayback=1;
+    	fresult = f_read(&file, SDbuffer, SDSIZE, &bytes_read);
+    	tempbuff[0]=SDbuffer[0]*128;
+    	HAL_I2S_Transmit_DMA(&hi2s3, (uint16_t *)tempbuff, SDSIZE);
+    	if(f_eof(&file)){
+    		HAL_TIM_Base_Stop_IT(&htim6);
+    		HAL_I2S_DeInit(&hi2s3);
+
+    		HAL_StatusTypeDef result = HAL_I2S_Init(&hi2s3);
+    		fresult = f_close(&file);
+    		musicPlayback=0;
+    	}
+    }
+}
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_PIN)
+{
+    HAL_TIM_Base_Start_IT(&htim3);
+}
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-float mySinVal;
-float sample_dt;
-uint16_t sample_N;
-uint16_t i_t;
 
-uint16_t myDacVal;
-
-int16_t I2S_dummy[4];
 /* USER CODE END 0 */
 
 /**
@@ -134,9 +196,9 @@ int16_t I2S_dummy[4];
 int main(void)
 {
   /* USER CODE BEGIN 1 */
-	sample_dt = F_OUT/F_SAMPLE;
-	sample_N = F_SAMPLE/F_OUT;
+
   /* USER CODE END 1 */
+  
 
   /* MCU Configuration--------------------------------------------------------*/
 
@@ -159,49 +221,31 @@ int main(void)
   MX_DMA_Init();
   MX_I2C1_Init();
   MX_I2S3_Init();
-  MX_DAC_Init();
-  MX_TIM2_Init();
   MX_SPI1_Init();
+  MX_TIM3_Init();
+  MX_TIM6_Init();
   /* USER CODE BEGIN 2 */
-  CS43_Init(hi2c1, MODE_ANALOG);
-  CS43_SetVolume(50);
+  CS43_Init(hi2c1, MODE_I2S);
+  CS43_SetVolume(80);
   CS43_Enable_RightLeft(CS43_RIGHT_LEFT);
   CS43_Start();
-  HAL_I2S_Transmit_DMA(&hi2s3, (uint16_t *)I2S_dummy, 4);
 
-  //START DAC
-  HAL_DAC_Start(&hdac, DAC_CHANNEL_1);
-  //START TIM2
-  HAL_TIM_Base_Start_IT(&htim2);
+  fresult = f_mount(&FatFs, "",1);
+
+
+
+
 
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-	/*fresult = f_mount(&FatFs, "", 0);
-	fresult = f_open(&file, "song.c", FA_READ);
-	fresult = f_lseek(&file,44);*/
   while (1)
   {
     /* USER CODE END WHILE */
 
-	    /* USER CODE END WHILE */
-
-		 /* fresult = f_read(&file, buffer, 16, &bytes_read);
-		  myDacVal = buffer;
-		  HAL_Delay (22);
-		  HAL_DAC_SetValue(&hdac, DAC_CHANNEL_1, DAC_ALIGN_8B_R, myDacVal);*/
-fresult = f_mount(&FatFs, "", 0);
-fresult = f_open(&file, "write.txt", FA_OPEN_ALWAYS | FA_WRITE);
-int len = sprintf( buffer, "Hello PTM!\r\n");
-fresult = f_write(&file, buffer, len, &bytes_written);
-fresult = f_close (&file);
-
-
     /* USER CODE BEGIN 3 */
   }
- // fresult = f_close (&file);
-
   /* USER CODE END 3 */
 }
 
@@ -215,11 +259,11 @@ void SystemClock_Config(void)
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
   RCC_PeriphCLKInitTypeDef PeriphClkInitStruct = {0};
 
-  /**Configure the main internal regulator output voltage 
+  /** Configure the main internal regulator output voltage 
   */
   __HAL_RCC_PWR_CLK_ENABLE();
   __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
-  /**Initializes the CPU, AHB and APB busses clocks 
+  /** Initializes the CPU, AHB and APB busses clocks 
   */
   RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
   RCC_OscInitStruct.HSEState = RCC_HSE_ON;
@@ -233,7 +277,7 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
-  /**Initializes the CPU, AHB and APB busses clocks 
+  /** Initializes the CPU, AHB and APB busses clocks 
   */
   RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
                               |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
@@ -247,51 +291,12 @@ void SystemClock_Config(void)
     Error_Handler();
   }
   PeriphClkInitStruct.PeriphClockSelection = RCC_PERIPHCLK_I2S;
-  PeriphClkInitStruct.PLLI2S.PLLI2SN = 50;
+  PeriphClkInitStruct.PLLI2S.PLLI2SN = 192;
   PeriphClkInitStruct.PLLI2S.PLLI2SR = 2;
   if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInitStruct) != HAL_OK)
   {
     Error_Handler();
   }
-}
-
-/**
-  * @brief DAC Initialization Function
-  * @param None
-  * @retval None
-  */
-
-static void MX_DAC_Init(void)
-{
-
-  /* USER CODE BEGIN DAC_Init 0 */
-
-  /* USER CODE END DAC_Init 0 */
-
-  DAC_ChannelConfTypeDef sConfig = {0};
-
-  /* USER CODE BEGIN DAC_Init 1 */
-
-  /* USER CODE END DAC_Init 1 */
-  /**DAC Initialization 
-  */
-  hdac.Instance = DAC;
-  if (HAL_DAC_Init(&hdac) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /**DAC channel OUT1 config 
-  */
-  sConfig.DAC_Trigger = DAC_TRIGGER_NONE;
-  sConfig.DAC_OutputBuffer = DAC_OUTPUTBUFFER_ENABLE;
-  if (HAL_DAC_ConfigChannel(&hdac, &sConfig, DAC_CHANNEL_1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN DAC_Init 2 */
-
-  /* USER CODE END DAC_Init 2 */
-
 }
 
 /**
@@ -401,46 +406,85 @@ static void MX_SPI1_Init(void)
 }
 
 /**
-  * @brief TIM2 Initialization Function
+  * @brief TIM3 Initialization Function
   * @param None
   * @retval None
   */
-static void MX_TIM2_Init(void)
+static void MX_TIM3_Init(void)
 {
 
-  /* USER CODE BEGIN TIM2_Init 0 */
+  /* USER CODE BEGIN TIM3_Init 0 */
 
-  /* USER CODE END TIM2_Init 0 */
+  /* USER CODE END TIM3_Init 0 */
 
   TIM_ClockConfigTypeDef sClockSourceConfig = {0};
   TIM_MasterConfigTypeDef sMasterConfig = {0};
 
-  /* USER CODE BEGIN TIM2_Init 1 */
+  /* USER CODE BEGIN TIM3_Init 1 */
 
-  /* USER CODE END TIM2_Init 1 */
-  htim2.Instance = TIM2;
-  htim2.Init.Prescaler = 84-1;
-  htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim2.Init.Period = 20-1;
-  htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-  if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
+  /* USER CODE END TIM3_Init 1 */
+  htim3.Instance = TIM3;
+  htim3.Init.Prescaler = 499;
+  htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim3.Init.Period = 8399;
+  htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim3) != HAL_OK)
   {
     Error_Handler();
   }
   sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
-  if (HAL_TIM_ConfigClockSource(&htim2, &sClockSourceConfig) != HAL_OK)
+  if (HAL_TIM_ConfigClockSource(&htim3, &sClockSourceConfig) != HAL_OK)
   {
     Error_Handler();
   }
-  sMasterConfig.MasterOutputTrigger = TIM_TRGO_UPDATE;
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
   sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
-  if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK)
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim3, &sMasterConfig) != HAL_OK)
   {
     Error_Handler();
   }
-  /* USER CODE BEGIN TIM2_Init 2 */
+  /* USER CODE BEGIN TIM3_Init 2 */
 
-  /* USER CODE END TIM2_Init 2 */
+  /* USER CODE END TIM3_Init 2 */
+
+}
+
+/**
+  * @brief TIM6 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM6_Init(void)
+{
+
+  /* USER CODE BEGIN TIM6_Init 0 */
+
+  /* USER CODE END TIM6_Init 0 */
+
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM6_Init 1 */
+
+  /* USER CODE END TIM6_Init 1 */
+  htim6.Instance = TIM6;
+  htim6.Init.Prescaler = 0;
+  htim6.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim6.Init.Period = 5109;
+  htim6.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim6) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim6, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM6_Init 2 */
+
+  /* USER CODE END TIM6_Init 2 */
 
 }
 
@@ -471,50 +515,40 @@ static void MX_GPIO_Init(void)
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOH_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
-  __HAL_RCC_GPIOD_CLK_ENABLE();
+  __HAL_RCC_GPIOE_CLK_ENABLE();
   __HAL_RCC_GPIOC_CLK_ENABLE();
+  __HAL_RCC_GPIOD_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOD, GPIO_PIN_12|GPIO_PIN_13|GPIO_PIN_14|GPIO_PIN_15 
-                          |GPIO_PIN_4, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOD, GPIO_PIN_4, GPIO_PIN_RESET);
 
-  /*Configure GPIO pins : PD12 PD13 PD14 PD15 
-                           PD4 */
-  GPIO_InitStruct.Pin = GPIO_PIN_12|GPIO_PIN_13|GPIO_PIN_14|GPIO_PIN_15 
-                          |GPIO_PIN_4;
+  /*Configure GPIO pins : PE9 PE10 */
+  GPIO_InitStruct.Pin = GPIO_PIN_9|GPIO_PIN_10;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : PD4 */
+  GPIO_InitStruct.Pin = GPIO_PIN_4;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
 
+  /* EXTI interrupt init*/
+  HAL_NVIC_SetPriority(EXTI9_5_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(EXTI9_5_IRQn);
+
+  HAL_NVIC_SetPriority(EXTI15_10_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
+
 }
 
 /* USER CODE BEGIN 4 */
 
-void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
-{
-/* Prevent unused argument(s) compilation warning */
-UNUSED(htim);
-/* NOTE : This function Should not be modified, when the callback is needed,
-          the __HAL_TIM_PeriodElapsedCallback could be implemented in the user file
-*/
 
-if(htim->Instance == TIM2)
-{
 
-	mySinVal = sinf(i_t * 2 * PI * sample_dt);
-//Convert from float to decimal
-	myDacVal = (mySinVal + 1)*127;
-//Output the sample to the STM DAC
-
-HAL_DAC_SetValue(&hdac, DAC_CHANNEL_1, DAC_ALIGN_8B_R, myDacVal);
-
-	i_t++;
-	if(i_t>= sample_N) i_t = 0;
-}
-
-}
 /* USER CODE END 4 */
 
 /**

@@ -15,7 +15,7 @@ System Workbench for STM32 Neon.3 Release (4.6.3)
 <br>
 <h2>How to run</h2>
 <br>
-Insert the headphones or speaker into the minijack port. Press K7 button to start or stop playing the .wav file. You can switch .wav files using the K6 button. 
+Place .wav files from the "sdcard" folder on the sd card, then place the sd card in the card reader. Insert the headphones or speaker into the minijack port. Press K7 button to start or stop playing the .wav file. You can switch .wav files using the K6 button. 
 <br>
 <h2>How to compile</h2>
 <br>
